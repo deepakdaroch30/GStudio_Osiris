@@ -115,6 +115,7 @@ model GeneratedTestCase {
   updatedAt              DateTime            @updatedAt
   automationScript       String?
   comments               String?
+  labels                 String?             // Comma-separated labels
   requirement            ExternalRequirementCache @relation(fields: [requirementId], references: [id])
   batch                  GenerationBatch     @relation(fields: [batchId], references: [id])
   pushItems              PushExecutionItem[]

@@ -17,7 +17,8 @@ import {
   Code,
   MessageSquare,
   Sparkles,
-  Lightbulb
+  Lightbulb,
+  RefreshCw
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 
@@ -34,6 +35,12 @@ export default function TestDesign() {
   const [isGeneratingScript, setIsGeneratingScript] = useState<string | null>(null);
   const [expandedReqs, setExpandedReqs] = useState<string[]>([]);
   const [viewingScript, setViewingScript] = useState<string | null>(null);
+  const [commentingId, setCommentingId] = useState<string | null>(null);
+  const [commentText, setCommentText] = useState('');
+  const [isSavingComment, setIsSavingComment] = useState(false);
+  const [editingLabelsId, setEditingLabelsId] = useState<string | null>(null);
+  const [labelsText, setLabelsText] = useState('');
+  const [isSavingLabels, setIsSavingLabels] = useState(false);
 
   useEffect(() => {
     fetchWorkspaces();
@@ -108,8 +115,49 @@ export default function TestDesign() {
 
   const handleDelete = async (id: string) => {
     if (confirm('Delete this test case?')) {
-      await axios.delete(`/api/v1/test-cases/${id}`);
+      try {
+        await axios.delete(`/api/v1/test-cases/${id}`);
+        fetchTestCases();
+      } catch (e) {
+        console.error(e);
+        alert('Failed to delete test case');
+      }
+    }
+  };
+
+  const handleSaveComment = async () => {
+    if (!commentingId) return;
+    setIsSavingComment(true);
+    try {
+      await axios.patch(`/api/v1/test-cases/${commentingId}`, {
+        comments: commentText
+      });
+      setCommentingId(null);
+      setCommentText('');
       fetchTestCases();
+    } catch (e) {
+      console.error(e);
+      alert('Failed to save comment');
+    } finally {
+      setIsSavingComment(false);
+    }
+  };
+
+  const handleSaveLabels = async () => {
+    if (!editingLabelsId) return;
+    setIsSavingLabels(true);
+    try {
+      await axios.patch(`/api/v1/test-cases/${editingLabelsId}`, {
+        labels: labelsText
+      });
+      setEditingLabelsId(null);
+      setLabelsText('');
+      fetchTestCases();
+    } catch (e) {
+      console.error(e);
+      alert('Failed to save labels');
+    } finally {
+      setIsSavingLabels(false);
     }
   };
 
@@ -220,6 +268,11 @@ export default function TestDesign() {
                               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                                 Priority: {tc.priority}
                               </span>
+                              {tc.labels && tc.labels.split(',').map((label: string, i: number) => (
+                                <span key={i} className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded uppercase tracking-wider">
+                                  {label}
+                                </span>
+                              ))}
                               {tc.status === 'PUSHED' && (
                                 <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded uppercase tracking-wider flex items-center gap-1">
                                   <CheckCircle2 className="w-3 h-3" /> Pushed
@@ -244,12 +297,18 @@ export default function TestDesign() {
                             </div>
 
                             <div className="mt-6">
-                              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Steps</div>
-                              <div className="space-y-2">
-                                {JSON.parse(tc.stepsJson).map((step: string, i: number) => (
-                                  <div key={i} className="flex gap-3 text-sm text-slate-600">
-                                    <span className="font-bold text-slate-400">{i + 1}.</span>
-                                    <span>{step}</span>
+                              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Steps & Expected Results</div>
+                              <div className="space-y-3">
+                                {JSON.parse(tc.stepsJson).map((step: any, i: number) => (
+                                  <div key={i} className="bg-slate-50 rounded-lg border border-slate-100 overflow-hidden">
+                                    <div className="flex gap-3 text-sm p-3 border-b border-slate-100">
+                                      <span className="font-bold text-slate-400">{i + 1}.</span>
+                                      <span className="text-slate-700">{typeof step === 'string' ? step : step.action}</span>
+                                    </div>
+                                    <div className="bg-emerald-50/30 p-3 flex gap-3 text-xs">
+                                      <span className="font-bold text-emerald-600 shrink-0">Expected:</span>
+                                      <span className="text-emerald-700 italic">{typeof step === 'string' ? tc.expectedResult : step.expectedResult}</span>
+                                    </div>
                                   </div>
                                 ))}
                               </div>
@@ -274,15 +333,19 @@ export default function TestDesign() {
                           </div>
 
                           <div className="flex flex-col gap-2">
-                            {tc.status !== 'APPROVED' && tc.status !== 'PUSHED' && (
-                              <button 
-                                onClick={() => handleApprove(tc.id)}
-                                className="p-2 bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100 transition-colors"
-                                title="Approve"
-                              >
-                                <Check className="w-5 h-5" />
-                              </button>
-                            )}
+                            <button 
+                              onClick={() => handleApprove(tc.id)}
+                              className={cn(
+                                "p-2 rounded-lg transition-colors",
+                                tc.status === 'APPROVED' ? 'bg-emerald-600 text-white' : 
+                                tc.status === 'PUSHED' ? 'bg-indigo-600 text-white opacity-50 cursor-not-allowed' :
+                                'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                              )}
+                              disabled={tc.status === 'PUSHED'}
+                              title={tc.status === 'APPROVED' ? "Approved" : "Approve"}
+                            >
+                              <Check className="w-5 h-5" />
+                            </button>
                             <button 
                               onClick={() => handleGenerateScript(tc.id)}
                               disabled={isGeneratingScript === tc.id}
@@ -291,12 +354,30 @@ export default function TestDesign() {
                             >
                               <Code className={cn("w-5 h-5", isGeneratingScript === tc.id && "animate-pulse")} />
                             </button>
-                            <button className="p-2 bg-slate-50 text-slate-400 rounded-lg hover:bg-slate-100 hover:text-indigo-600 transition-colors">
+                            <button 
+                              onClick={() => {
+                                setEditingLabelsId(tc.id);
+                                setLabelsText(tc.labels || '');
+                              }}
+                              className="p-2 bg-slate-50 text-slate-400 rounded-lg hover:bg-slate-100 hover:text-indigo-600 transition-colors"
+                              title="Edit Labels"
+                            >
+                              <Edit2 className="w-5 h-5" />
+                            </button>
+                            <button 
+                              onClick={() => {
+                                setCommentingId(tc.id);
+                                setCommentText(tc.comments || '');
+                              }}
+                              className="p-2 bg-slate-50 text-slate-400 rounded-lg hover:bg-slate-100 hover:text-indigo-600 transition-colors"
+                              title="Add Comment"
+                            >
                               <MessageSquare className="w-5 h-5" />
                             </button>
                             <button 
                               onClick={() => handleDelete(tc.id)}
                               className="p-2 bg-slate-50 text-slate-400 rounded-lg hover:bg-slate-100 hover:text-rose-600 transition-colors"
+                              title="Delete"
                             >
                               <Trash2 className="w-5 h-5" />
                             </button>
@@ -383,8 +464,89 @@ export default function TestDesign() {
               >
                 Close
               </button>
-              <button className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-indigo-700">
+              <button 
+                onClick={() => {
+                  navigator.clipboard.writeText(viewingScript);
+                  alert('Copied to clipboard!');
+                }}
+                className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-indigo-700"
+              >
                 Copy to Clipboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {commentingId && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-slate-900">Test Case Comments</h3>
+              <button onClick={() => setCommentingId(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <textarea 
+                className="w-full h-32 p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="Add your review comments or notes here..."
+                value={commentText}
+                onChange={e => setCommentText(e.target.value)}
+              />
+            </div>
+            <div className="p-6 bg-slate-50 flex items-center justify-end gap-3">
+              <button 
+                onClick={() => setCommentingId(null)}
+                className="px-4 py-2 text-slate-600 font-medium hover:text-slate-900"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleSaveComment}
+                disabled={isSavingComment}
+                className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {isSavingComment && <RefreshCw className="w-4 h-4 animate-spin" />}
+                Save Comment
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingLabelsId && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-md overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-slate-900">Edit Labels</h3>
+              <button onClick={() => setEditingLabelsId(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <input 
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="Label1, Label2, Label3"
+                value={labelsText}
+                onChange={e => setLabelsText(e.target.value.replace(/\s+/g, '_'))}
+              />
+              <p className="text-[10px] text-slate-400 mt-2 italic">Labels cannot contain spaces. Spaces will be replaced with underscores.</p>
+            </div>
+            <div className="p-6 bg-slate-50 flex items-center justify-end gap-3">
+              <button 
+                onClick={() => setEditingLabelsId(null)}
+                className="px-4 py-2 text-slate-600 font-medium hover:text-slate-900"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleSaveLabels}
+                disabled={isSavingLabels}
+                className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {isSavingLabels && <RefreshCw className="w-4 h-4 animate-spin" />}
+                Save Labels
               </button>
             </div>
           </div>

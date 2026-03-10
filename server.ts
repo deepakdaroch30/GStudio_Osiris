@@ -205,6 +205,7 @@ async function startServer() {
   });
 
   app.patch("/api/v1/workspaces/:id", async (req, res) => {
+    console.log(`[WORKSPACE] Updating workspace ${req.params.id}:`, JSON.stringify(req.body, null, 2));
     const workspace = await prisma.workspace.update({
       where: { id: req.params.id },
       data: req.body
@@ -607,39 +608,59 @@ async function startServer() {
 
     const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
     const format = workspace?.testCaseFormat || "STANDARD";
-    const aiProvider = workspace?.aiProvider || "GEMINI";
+    const aiProvider = (workspace?.aiProvider || "GEMINI").toUpperCase();
+
+    console.log(`[GEN] Starting generation batch ${batch.id} for workspace ${workspaceId}`);
+    console.log(`[GEN] AI Provider: ${aiProvider}`);
+    console.log(`[GEN] Groq Key Present: ${!!(workspace?.groqApiKey || process.env.GROQ_API_KEY)}`);
 
     try {
       for (const reqObj of requirements) {
-        console.log(`[GEN] Generating test cases for ${reqObj.key}: ${reqObj.title} using ${aiProvider}`);
+        console.log(`[GEN] Generating test cases for ${reqObj.key} using ${aiProvider}`);
         
         const prompt = `
-          Generate comprehensive test cases for the following user story/requirement.
-          
-          SUMMARY: ${reqObj.title}
-          DESCRIPTION: ${reqObj.description || "N/A"}
-          ACCEPTANCE CRITERIA: ${reqObj.acceptanceCriteria || "N/A"}
-          COMMENTS/DISCUSSION: ${reqObj.comments || "N/A"}
-          
-          The test cases should be in ${format} format.
-          If format is GHERKIN, provide steps as a list of Given/When/Then strings.
-          If format is STANDARD, provide steps as a list of clear action strings.
-          
-          Provide at least 3-5 test cases covering happy path, edge cases, and negative scenarios.
-          
-          Return the response as a JSON object with a "testCases" array. Each test case must have:
-          - title (string)
-          - preconditions (string)
-          - steps (array of strings)
-          - expectedResult (string)
-          - scenarioType (string: FUNCTIONAL, NEGATIVE, EDGE_CASE, or SECURITY)
-          - priority (string: High, Medium, or Low)
+          # QA Test Case Generation Assistant
+
+          You are a professional QA assistant. Generate crisp, comprehensive, and structured test cases for the following Jira user story.
+
+          ## INPUT DATA
+          - SUMMARY: ${reqObj.title}
+          - DESCRIPTION: ${reqObj.description || "N/A"}
+          - ACCEPTANCE CRITERIA: ${reqObj.acceptanceCriteria || "N/A"}
+          - COMMENTS/DISCUSSION: ${reqObj.comments || "N/A"}
+          - TECHNICAL CONTEXT: ${reqObj.technicalContext || "N/A"}
+
+          ## TEST CASE GENERATION RULES
+          1. **Coverage**: Focus on RELEVANCE over quantity. Generate 3-7 highly relevant test cases covering Positive scenarios, Negative scenarios, and critical Edge cases.
+          2. **Granularity**: Steps must be granular and sequential. Maintain a 1:1 mapping between each action and its specific expected result.
+          3. **Format**: The test cases should be in ${format} format.
+          4. **Labels**: Assign 2-3 relevant labels to each test case (e.g., 'Functional', 'Regression', 'UI'). Labels MUST NOT contain spaces (use underscores or hyphens instead).
+
+          ## OUTPUT INSTRUCTIONS
+          Return the response ONLY as a JSON object with a "testCases" array. 
+          Each test case object must include:
+          - title: A clear summary of the test case.
+          - preconditions: Any setup required, including specific **Test Data**.
+          - steps: An array of objects, each with:
+            - action: The granular step to perform.
+            - expectedResult: The specific expected result for THIS step.
+          - expectedResult: The final overall successful outcome.
+          - scenarioType: One of [FUNCTIONAL, NEGATIVE, EDGE_CASE, SECURITY].
+          - priority: One of [High, Normal, Low].
+          - labels: An array of relevant strings.
+          - comments: Include any **Gap Analysis** (missing/unclear requirements), assumptions made, or brief explanations for edge cases.
+
+          Always respond in valid JSON format.
         `;
 
         let testCases: any[] = [];
 
-        if (aiProvider === "GROQ" && workspace?.groqApiKey) {
-          const groq = new Groq({ apiKey: workspace.groqApiKey });
+        if (aiProvider === "GROQ") {
+          const apiKey = workspace?.groqApiKey || process.env.GROQ_API_KEY;
+          if (!apiKey) {
+            throw new Error("Groq API Key not found. Please configure it in Workspace Settings.");
+          }
+          const groq = new Groq({ apiKey });
           const completion = await groq.chat.completions.create({
             messages: [
               { role: "system", content: "You are a professional QA engineer. Always respond in valid JSON format." },
@@ -668,11 +689,23 @@ async function startServer() {
                         preconditions: { type: Type.STRING },
                         steps: { 
                           type: Type.ARRAY, 
-                          items: { type: Type.STRING } 
+                          items: { 
+                            type: Type.OBJECT,
+                            properties: {
+                              action: { type: Type.STRING },
+                              expectedResult: { type: Type.STRING }
+                            },
+                            required: ["action", "expectedResult"]
+                          } 
                         },
                         expectedResult: { type: Type.STRING },
                         scenarioType: { type: Type.STRING, description: "FUNCTIONAL, NEGATIVE, EDGE_CASE, or SECURITY" },
-                        priority: { type: Type.STRING, description: "High, Medium, or Low" }
+                        priority: { type: Type.STRING, description: "High, Normal, or Low" },
+                        labels: { 
+                          type: Type.ARRAY, 
+                          items: { type: Type.STRING } 
+                        },
+                        comments: { type: Type.STRING }
                       },
                       required: ["title", "steps", "expectedResult", "scenarioType", "priority"]
                     }
@@ -698,7 +731,9 @@ async function startServer() {
               stepsJson: JSON.stringify(tc.steps),
               expectedResult: tc.expectedResult,
               scenarioType: tc.scenarioType,
-              priority: tc.priority
+              priority: tc.priority,
+              comments: tc.comments || "",
+              labels: Array.isArray(tc.labels) ? tc.labels.join(",") : ""
             }
           });
         }
@@ -739,6 +774,14 @@ async function startServer() {
     res.json(tc);
   });
 
+  app.post("/api/v1/test-cases/:id/approve", async (req, res) => {
+    const updated = await prisma.generatedTestCase.update({
+      where: { id: req.params.id },
+      data: { status: "APPROVED" }
+    });
+    res.json(updated);
+  });
+
   app.post("/api/v1/test-cases/:id/generate-script", async (req, res) => {
     const tc = await prisma.generatedTestCase.findUnique({ 
       where: { id: req.params.id },
@@ -747,8 +790,11 @@ async function startServer() {
     if (!tc) return res.status(404).json({ error: "Test case not found" });
 
     const framework = tc.batch.workspace.automationFramework;
-    const aiProvider = tc.batch.workspace.aiProvider || "GEMINI";
+    const aiProvider = (tc.batch.workspace.aiProvider || "GEMINI").toUpperCase();
     
+    console.log(`[SCRIPT] Generating script for ${tc.id} using ${aiProvider}`);
+    console.log(`[SCRIPT] Groq Key Present: ${!!(tc.batch.workspace.groqApiKey || process.env.GROQ_API_KEY)}`);
+
     const prompt = `
       Generate a ${framework} automation script for the following test case.
       
@@ -764,8 +810,12 @@ async function startServer() {
     `;
 
     let script = "";
-    if (aiProvider === "GROQ" && tc.batch.workspace.groqApiKey) {
-      const groq = new Groq({ apiKey: tc.batch.workspace.groqApiKey });
+    if (aiProvider === "GROQ") {
+      const apiKey = tc.batch.workspace.groqApiKey || process.env.GROQ_API_KEY;
+      if (!apiKey) {
+        throw new Error("Groq API Key not found. Please configure it in Workspace Settings.");
+      }
+      const groq = new Groq({ apiKey });
       const completion = await groq.chat.completions.create({
         messages: [{ role: "user", content: prompt }],
         model: tc.batch.workspace.groqModel || "llama-3.3-70b-versatile",
@@ -820,6 +870,12 @@ async function startServer() {
   app.post("/api/v1/push-executions", async (req, res) => {
     const { workspaceId, testCaseIds } = req.body;
     
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      include: { targetConnection: true }
+    });
+    if (!workspace || !workspace.targetConnection) return res.status(404).json({ error: "Workspace or target connection not found" });
+
     const execution = await prisma.pushExecution.create({
       data: { workspaceId, status: "IN_PROGRESS" }
     });
@@ -829,39 +885,111 @@ async function startServer() {
       include: { requirement: true }
     });
 
+    const secret = workspace.targetConnection.encryptedSecret; // In a real app we'd decrypt this
+    const headers: any = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${secret}`
+    };
+
+    const client = axios.create({
+      baseURL: workspace.targetConnection.baseUrl.endsWith('/') ? workspace.targetConnection.baseUrl : `${workspace.targetConnection.baseUrl}/`,
+      headers
+    });
+
     for (const tc of testCases) {
-      // Mock Push to Zephyr
-      const targetKey = `ZEP-${Math.floor(Math.random() * 1000)}`;
-      const targetId = `ext-${Math.floor(Math.random() * 10000)}`;
+      try {
+        console.log(`[PUSH] Pushing test case ${tc.id} to Zephyr...`);
+        
+        // Zephyr Scale Cloud API: POST /v2/testcases
+        const steps = JSON.parse(tc.stepsJson).map((step: any) => ({
+          inline: {
+            description: step.action || step, // Fallback for old data
+            expectedResult: step.expectedResult || tc.expectedResult
+          }
+        }));
 
-      await prisma.pushExecutionItem.create({
-        data: {
-          pushExecutionId: execution.id,
-          generatedTestCaseId: tc.id,
-          sourceRequirementExternalId: tc.requirement.externalId,
-          targetExternalTestCaseId: targetId,
-          targetExternalTestCaseKey: targetKey,
-          createStatus: "SUCCESS",
-          linkStatus: "SUCCESS"
+        // Only include Jira link if it looks like a valid Jira key (e.g., PROJ-123)
+        const jiraLinks = [];
+        if (tc.sourceRequirementKey && /^[A-Z][A-Z0-9]+-\d+$/.test(tc.sourceRequirementKey)) {
+          jiraLinks.push({
+            issueKey: tc.sourceRequirementKey,
+            relationshipName: "Relates"
+          });
         }
-      });
 
-      // Create Traceability Link
-      await prisma.traceabilityLink.create({
-        data: {
-          workspaceId,
-          requirementId: tc.requirementId,
-          generatedTestCaseId: tc.id,
-          targetExternalTestCaseId: targetId,
-          targetExternalTestCaseKey: targetKey
+        const payload = {
+          projectKey: workspace.projectKey,
+          name: tc.title,
+          precondition: tc.preconditions || "",
+          objective: tc.sourceRequirementTitle,
+          priorityName: tc.priority || "Normal",
+          statusName: "Draft",
+          labels: tc.labels ? tc.labels.split(',').map((l: string) => l.trim().replace(/\s+/g, '_')) : [],
+          testSteps: steps,
+          links: jiraLinks.length > 0 ? jiraLinks : undefined
+        };
+
+        console.log(`[PUSH] Sending payload to Zephyr for ${tc.id}:`, JSON.stringify({ ...payload, testSteps: '...' }));
+
+        let response;
+        try {
+          response = await client.post('v2/testcases', payload);
+        } catch (e: any) {
+          // If it failed with 404 and we had links, try one more time without links
+          // as the Jira issue key might be the cause of the 404
+          if (e.response?.status === 404 && jiraLinks.length > 0) {
+            console.warn(`[PUSH] 404 detected for ${tc.id}, retrying without Jira links...`);
+            const fallbackPayload = { ...payload, links: undefined };
+            response = await client.post('v2/testcases', fallbackPayload);
+          } else {
+            throw e;
+          }
         }
-      });
 
-      // Update Test Case Status
-      await prisma.generatedTestCase.update({
-        where: { id: tc.id },
-        data: { status: "PUSHED" }
-      });
+        const targetKey = response.data.key;
+        const targetId = response.data.id.toString();
+
+        await prisma.pushExecutionItem.create({
+          data: {
+            pushExecutionId: execution.id,
+            generatedTestCaseId: tc.id,
+            sourceRequirementExternalId: tc.requirement.externalId,
+            targetExternalTestCaseId: targetId,
+            targetExternalTestCaseKey: targetKey,
+            createStatus: "SUCCESS",
+            linkStatus: "SUCCESS"
+          }
+        });
+
+        // Create Traceability Link
+        await prisma.traceabilityLink.create({
+          data: {
+            workspaceId,
+            requirementId: tc.requirementId,
+            generatedTestCaseId: tc.id,
+            targetExternalTestCaseId: targetId,
+            targetExternalTestCaseKey: targetKey
+          }
+        });
+
+        // Update Test Case Status
+        await prisma.generatedTestCase.update({
+          where: { id: tc.id },
+          data: { status: "PUSHED" }
+        });
+      } catch (e: any) {
+        console.error(`[PUSH] Failed to push test case ${tc.id}:`, e.response?.data || e.message);
+        await prisma.pushExecutionItem.create({
+          data: {
+            pushExecutionId: execution.id,
+            generatedTestCaseId: tc.id,
+            sourceRequirementExternalId: tc.requirement.externalId,
+            createStatus: "FAILED",
+            linkStatus: "FAILED",
+            errorMessage: JSON.stringify(e.response?.data || e.message)
+          }
+        });
+      }
     }
 
     await prisma.pushExecution.update({
