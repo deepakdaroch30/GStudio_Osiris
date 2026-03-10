@@ -1,0 +1,178 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Connection {
+  id                  String      @id @default(uuid())
+  organizationId      String      @default("default-org")
+  name                String
+  toolType            String
+  baseUrl             String
+  secondaryBaseUrl    String?
+  authType            String
+  username            String?
+  encryptedSecret     String
+  maskedSecretPreview String
+  status              String      @default("ACTIVE")
+  lastValidatedAt     DateTime?
+  metadataJson        String?
+  createdById         String      @default("system")
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  workspacesAsTarget  Workspace[] @relation("TargetConnection")
+  workspacesAsJira    Workspace[] @relation("JiraConnection")
+}
+
+model Workspace {
+  id                        String             @id @default(uuid())
+  organizationId            String             @default("default-org")
+  name                      String
+  jiraConnectionId          String
+  targetConnectionId        String
+  projectKey                String
+  projectName               String?
+  planningContextType       String?
+  planningContextExternalId String?
+  planningContextName       String?
+  planningContextState      String?
+  testCaseFormat            String             @default("STANDARD")
+  automationFramework       String             @default("PLAYWRIGHT")
+  aiProvider                String             @default("GEMINI") // GEMINI or GROQ
+  groqApiKey                String?
+  groqModel                 String?            @default("llama-3.3-70b-versatile")
+  lastSyncedAt              DateTime?
+  status                    String             @default("ACTIVE")
+  createdById               String             @default("system")
+  createdAt                 DateTime           @default(now())
+  updatedAt                 DateTime           @updatedAt
+  generationBatches         GenerationBatch[]
+  pushExecutions            PushExecution[]
+  requirements              ExternalRequirementCache[]
+  traceabilityLinks         TraceabilityLink[]
+  targetConnection          Connection         @relation("TargetConnection", fields: [targetConnectionId], references: [id])
+  jiraConnection            Connection         @relation("JiraConnection", fields: [jiraConnectionId], references: [id])
+}
+
+model ExternalRequirementCache {
+  id                 String              @id @default(uuid())
+  workspaceId        String
+  connectionId       String
+  externalId         String
+  key                String
+  title              String
+  description        String?
+  acceptanceCriteria String?
+  status             String
+  priority           String?
+  issueType          String
+  sourceType         String
+  comments           String?
+  rawPayloadJson     String?
+  syncedAt           DateTime            @default(now())
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  technicalContext   String?
+  testCases          GeneratedTestCase[]
+  workspace          Workspace           @relation(fields: [workspaceId], references: [id])
+  traceabilityLinks  TraceabilityLink[]
+
+  @@unique([connectionId, externalId, workspaceId])
+}
+
+model GenerationBatch {
+  id             String              @id @default(uuid())
+  workspaceId    String
+  createdById    String              @default("system")
+  status         String              @default("COMPLETED")
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  testCases      GeneratedTestCase[]
+  workspace      Workspace           @relation(fields: [workspaceId], references: [id])
+  pushExecutions PushExecution[]
+}
+
+model GeneratedTestCase {
+  id                     String              @id @default(uuid())
+  batchId                String
+  requirementId          String
+  sourceRequirementKey   String
+  sourceRequirementTitle String
+  title                  String
+  preconditions          String?
+  stepsJson              String
+  expectedResult         String
+  scenarioType           String
+  priority               String
+  status                 String              @default("DRAFT")
+  isManuallyEdited       Boolean             @default(false)
+  approvedById           String?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+  automationScript       String?
+  comments               String?
+  requirement            ExternalRequirementCache @relation(fields: [requirementId], references: [id])
+  batch                  GenerationBatch     @relation(fields: [batchId], references: [id])
+  pushItems              PushExecutionItem[]
+  traceabilityLinks      TraceabilityLink[]
+}
+
+model PushExecution {
+  id            String              @id @default(uuid())
+  workspaceId   String
+  batchId       String?
+  initiatedById String              @default("system")
+  status        String              @default("PENDING")
+  summaryJson   String?
+  startedAt     DateTime            @default(now())
+  completedAt   DateTime?
+  createdAt     DateTime            @default(now())
+  batch         GenerationBatch?    @relation(fields: [batchId], references: [id])
+  workspace     Workspace           @relation(fields: [workspaceId], references: [id])
+  items         PushExecutionItem[]
+}
+
+model PushExecutionItem {
+  id                          String            @id @default(uuid())
+  pushExecutionId             String
+  generatedTestCaseId         String
+  sourceRequirementExternalId String
+  targetExternalTestCaseId    String?
+  targetExternalTestCaseKey   String?
+  createStatus                String
+  linkStatus                  String
+  errorMessage                String?
+  createdAt                   DateTime          @default(now())
+  updatedAt                   DateTime          @updatedAt
+  testCase                    GeneratedTestCase @relation(fields: [generatedTestCaseId], references: [id])
+  pushExecution               PushExecution     @relation(fields: [pushExecutionId], references: [id])
+}
+
+model TraceabilityLink {
+  id                        String            @id @default(uuid())
+  workspaceId               String
+  requirementId             String
+  generatedTestCaseId       String
+  targetExternalTestCaseId  String
+  targetExternalTestCaseKey String?
+  linkType                  String            @default("VERIFIES")
+  createdAt                 DateTime          @default(now())
+  testCase                  GeneratedTestCase @relation(fields: [generatedTestCaseId], references: [id])
+  requirement               ExternalRequirementCache @relation(fields: [requirementId], references: [id])
+  workspace                 Workspace         @relation(fields: [workspaceId], references: [id])
+}
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String   @default("default-org")
+  actorUserId    String?  @default("system")
+  action         String
+  entityType     String
+  entityId       String
+  metadataJson   String?
+  createdAt      DateTime @default(now())
+}
