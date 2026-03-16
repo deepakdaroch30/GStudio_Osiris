@@ -104,28 +104,47 @@ async function startServer() {
   });
 
   app.post("/api/v1/connections", async (req, res) => {
-    const { name, toolType, baseUrl, authType, username, secret } = req.body;
-    const connection = await prisma.connection.create({
-      data: {
-        name,
-        toolType,
-        baseUrl,
-        authType,
-        username,
-        encryptedSecret: secret, // In a real app, this would be encrypted
-        maskedSecretPreview: secret.substring(0, 4) + "********",
+    try {
+      const { name, toolType, baseUrl, authType, username, secret } = req.body;
+      
+      if (!secret) {
+        return res.status(400).json({ error: "Secret is required" });
       }
-    });
-    await prisma.auditLog.create({
-      data: { action: "CONNECTION_CREATED", entityType: "Connection", entityId: connection.id }
-    });
-    res.json(connection);
+
+      const connection = await prisma.connection.create({
+        data: {
+          name,
+          toolType,
+          baseUrl,
+          authType,
+          username,
+          encryptedSecret: secret, // In a real app, this would be encrypted
+          maskedSecretPreview: (secret || "").substring(0, 4) + "********",
+        }
+      });
+      await prisma.auditLog.create({
+        data: { action: "CONNECTION_CREATED", entityType: "Connection", entityId: connection.id }
+      });
+      res.json(connection);
+    } catch (e: any) {
+      console.error("Failed to create connection:", e);
+      res.status(500).json({ error: "Failed to save connection", details: e.message });
+    }
   });
 
   app.post("/api/v1/connections/validate", async (req, res) => {
-    const { baseUrl, username, secret, toolType, authType } = req.body;
+    const { baseUrl: rawBaseUrl, username, secret, toolType, authType } = req.body;
     try {
-      let headers: any = {};
+      // Normalize baseUrl
+      let baseUrl = rawBaseUrl.replace(/\/$/, "");
+      baseUrl = baseUrl.replace(/\/rest\/api\/\d+$/, "");
+      baseUrl = baseUrl + "/";
+
+      let headers: any = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      };
+
       if (authType === 'BEARER') {
         headers['Authorization'] = `Bearer ${secret}`;
       } else {
@@ -135,12 +154,14 @@ async function startServer() {
 
       const client = axios.create({
         baseURL: baseUrl,
-        headers
+        headers,
+        timeout: 10000 // Add timeout
       });
 
+      console.log(`[VALIDATE] Validating ${toolType} at ${baseUrl}`);
+
       if (toolType === 'ZEPHYR_ESSENTIAL') {
-        // Zephyr Essential validation endpoint - use a more common one for ZAPI Cloud
-        // Try v2/projects as seen in user's Postman screenshot
+        // Zephyr Essential validation endpoint
         await client.get('v2/projects');
       } else {
         // Jira validation endpoint
@@ -150,7 +171,7 @@ async function startServer() {
       res.json({ status: "SUCCESS", message: "Connection validated successfully" });
     } catch (e: any) {
       console.error(`${toolType} validation failed:`, e.response?.data || e.message);
-      const errorMsg = e.response?.data?.errorMessages?.[0] || e.response?.data?.message || `Failed to connect to ${toolType}. Check your credentials and Base URL.`;
+      const errorMsg = e.response?.data?.errorMessages?.[0] || e.response?.data?.message || e.message || `Failed to connect to ${toolType}. Check your credentials and Base URL.`;
       res.status(400).json({ 
         status: "FAILED", 
         message: errorMsg
